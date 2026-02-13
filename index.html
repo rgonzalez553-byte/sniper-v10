@@ -1,43 +1,49 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <style>
-        body { background: #000; color: white; font-family: sans-serif; margin: 0; padding: 15px; height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
-        #command-bar { background: #111; border: 2px solid #333; border-radius: 15px; padding: 20px; text-align: center; margin-bottom: 10px; }
-        #main-command { font-size: 2.2em; margin: 0; font-weight: 900; color: #00ff66; }
-        #history-bar { display: flex; gap: 8px; overflow-x: auto; padding: 15px 0; border-bottom: 1px solid #222; margin-bottom: 20px; min-height: 50px; }
-        .hist-item { min-width: 40px; height: 40px; background: #222; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.1em; border: 1px solid #444; flex-shrink: 0; }
-        .hist-item:first-child { border-color: #00ff66; box-shadow: 0 0 8px #00ff66; font-weight: bold; }
-        #input-area { flex-grow: 1; border: 1px dashed #333; border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #555; text-align: center; }
-        #hidden-input { position: absolute; opacity: 0; pointer-events: none; }
-    </style>
-</head>
-<body onclick="document.getElementById('hidden-input').focus()">
-    <div id="command-bar">
-        <h1 id="main-command">READY</h1>
-        <div id="sub-text" style="color: #666; font-size: 0.8em; margin-top: 5px;">TAP TO TYPE</div>
-    </div>
-    <div id="history-bar"></div>
-    <div id="input-area">TAP ANYWHERE TO OPEN KEYBOARD</div>
-    <input type="tel" id="hidden-input" inputmode="numeric" pattern="[0-9]*">
-    <script>
-        const input = document.getElementById('hidden-input');
-        let history = [];
-        input.addEventListener('keydown', async (e) => {
-            if (e.key === 'Enter') {
-                if (input.value !== "") {
-                    history.unshift(parseInt(input.value));
-                    input.value = "";
-                    const res = await fetch('/analyze', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ history }) });
-                    const data = await res.json();
-                    document.getElementById('main-command').innerText = data.strategy.command;
-                    document.getElementById('main-command').style.color = data.strategy.color;
-                    document.getElementById('sub-text').innerText = data.strategy.side;
-                    document.getElementById('history-bar').innerHTML = history.map(n => `<div class="hist-item">${n}</div>`).join('');
-                }
-            }
-        });
-    </script>
-</body>
-</html>
+cat << 'EOF' > logic.js
+const sectors = {
+    n9_half: [16, 33, 21, 6, 18, 31, 19, 8, 12, 29, 25, 10, 27, 0, 1, 13, 36, 24, 3]
+};
+
+const getMasterStrategy = (history, timeHistory, bankroll = 500) => {
+    if (history.length < 5) return { command: 'SYNCING...', confidence: 0, color: '#888', recommendedBet: 'WAIT' };
+
+    const n = history.length;
+    const p = 19 / 37; 
+    const observed = history.filter(num => sectors.n9_half.includes(num)).length;
+    const expected = n * p;
+    const stdDev = Math.sqrt(n * p * (1 - p));
+    const zScore = (observed - expected) / stdDev;
+
+    const lastTime = timeHistory[0] || 0;
+    const avgTime = timeHistory.reduce((a, b) => a + b, 0) / (timeHistory.length || 1);
+    const rhythmDiff = Math.abs(lastTime - avgTime);
+
+    let edge = 0;
+    if (zScore < -0.8) edge += 0.05; 
+    if (rhythmDiff < 0.5) edge += 0.08; 
+
+    const winProb = p + edge;
+    const kellyFraction = (2 * winProb - 1) / 1; 
+    const totalBet = Math.max(0, Math.floor(bankroll * kellyFraction * 0.15)); 
+    const betPerNumber = Math.floor(totalBet / 19) || 1;
+
+    let command = 'SCANNING';
+    let color = '#ffcc00';
+    if (zScore < -1.0 && rhythmDiff < 0.5) {
+        command = 'STRIKE: HEAVY HALF';
+        color = '#00ff66';
+    } else if (rhythmDiff > 0.8) {
+        command = 'ERRATIC: NO BET';
+        color = '#ff4444';
+    }
+
+    return {
+        command, color,
+        confidence: Math.min((winProb * 100), 99).toFixed(0),
+        zScore: zScore.toFixed(2),
+        recommendedBet: `$${betPerNumber} / unit`,
+        totalRisk: `$${betPerNumber * 19}`,
+        rhythm: rhythmDiff < 0.5 ? 'STABLE' : 'DRIFT'
+    };
+};
+module.exports = { getMasterStrategy };
+EOF
